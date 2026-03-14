@@ -10,6 +10,7 @@
     const IG_BASE_URL = 'https://www.instagram.com';
     const IG_SHORTCODE_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
     const POST_REGEX = /^\/(p|tv|reel|reels)\/([A-Za-z0-9_-]+)/;
+    const PROFILE_REGEX = /^\/([A-Za-z0-9_.]+)\/?$/;
 
     let sessionHeaders = { wwwClaim: '', csrfToken: '' };
     const analysisInProgress = new Set();
@@ -29,6 +30,16 @@
         }
     });
 
+    // ── Listen for background requests ───────────────────────
+    chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+        if (msg.type === 'FETCH_POST_DATA') {
+            fetchPostData(msg.shortcode)
+                .then(data => sendResponse(data || { error: 'Not found' }))
+                .catch(err => sendResponse({ error: err.message }));
+            return true;
+        }
+    });
+
     // ── Get shortcode from current URL ───────────────────────
     function getShortcodeFromURL() {
         const m = window.location.pathname.match(POST_REGEX);
@@ -45,6 +56,7 @@
             lastHref = currentHref;
             window.postMessage({ type: 'INSTAGUARD_REQUEST_HEADERS' }, '*');
             setTimeout(tryInjectButton, 600);
+            setTimeout(tryInjectProfileButton, 800);
             // Start/stop reel polling based on page type
             manageReelPolling();
         }
@@ -73,6 +85,137 @@
     }
     // Start polling if we're already on a reel page
     manageReelPolling();
+
+    // ── Profile injection logic ───────────────────────────────
+    function getProfileUsernameFromURL() {
+        const path = window.location.pathname;
+        if (path === '/' || path.startsWith('/explore/') || path.startsWith('/reels/') || path.startsWith('/direct/')) return null;
+        const m = path.match(PROFILE_REGEX);
+        return m ? m[1] : null;
+    }
+
+    function tryInjectProfileButton() {
+        const username = getProfileUsernameFromURL();
+        if (!username) return;
+
+        if (document.getElementById('instaguard-profile-btn')) return;
+
+        // Try to find the profile header
+        const headerSelectors = [
+            'header section', // Typical desktop
+            'header'         // Fallback
+        ];
+
+        let target = null;
+        for (const sel of headerSelectors) {
+            target = document.querySelector(sel);
+            if (target) break;
+        }
+
+        if (target) {
+            insertProfileButton(target, username);
+        } else {
+            // Wait for it
+            setTimeout(tryInjectProfileButton, 1000);
+        }
+    }
+
+    function insertProfileButton(container, username) {
+        if (document.getElementById('instaguard-profile-btn')) return;
+
+        // Typically we want to insert it next to the Message/Follow buttons.
+        // The easiest way is to just append it to the header section but wrapped nicely.
+        const wrapper = document.createElement('div');
+        wrapper.style.display = 'flex';
+        wrapper.style.alignItems = 'center';
+        wrapper.style.marginTop = '15px';
+        wrapper.style.marginBottom = '15px';
+
+        const btn = document.createElement('button');
+        btn.id = 'instaguard-profile-btn';
+        btn.className = 'instaguard-scan-btn';
+        btn.style.width = '100%';
+        btn.style.justifyContent = 'center';
+        btn.style.padding = '8px 16px';
+        btn.dataset.username = username;
+        btn.innerHTML = `
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            </svg>
+            <span>Calculate Trust Score</span>
+        `;
+        
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            startProfileAnalysis(username, btn);
+        });
+
+        wrapper.appendChild(btn);
+
+        // Find a good place within the header section.
+        // Usually, `target.children[1]` is the bio or action buttons.
+        // If not, just append.
+        container.appendChild(wrapper);
+    }
+
+    async function startProfileAnalysis(username, btn) {
+        if (analysisInProgress.has('profile_' + username)) return;
+
+        btn.classList.add('loading');
+        btn.innerHTML = `<div class="instaguard-spinner"></div><span>Analyzing Top Reels…</span>`;
+        btn.disabled = true;
+        analysisInProgress.add('profile_' + username);
+
+        try {
+            // Find the recent posts grid
+            // Wait a moment in case it's rendering
+            await new Promise(r => setTimeout(r, 1000));
+            
+            const links = Array.from(document.querySelectorAll('a[href]'));
+            const shortcodes = [];
+            
+            for (const a of links) {
+                const href = a.getAttribute('href');
+                const m = href.match(POST_REGEX);
+                if (m) {
+                    const code = m[2];
+                    if (!shortcodes.includes(code)) {
+                        shortcodes.push(code);
+                    }
+                }
+                if (shortcodes.length >= 3) break;
+            }
+
+            if (shortcodes.length === 0) {
+                btn.innerHTML = `<span>No posts found.</span>`;
+                btn.classList.remove('loading');
+                btn.classList.add('error');
+                return;
+            }
+
+            const result = await chrome.runtime.sendMessage({
+                type: 'ANALYZE_PROFILE',
+                username,
+                shortcodes
+            });
+
+            if (result.success) {
+                showProfileResult(btn, result.analysis, username);
+            } else {
+                btn.innerHTML = `<span>${result.message || 'Analysis failed'}</span>`;
+                btn.classList.remove('loading');
+                btn.classList.add('error');
+            }
+        } catch (err) {
+            console.error('[InstaGuard]', err);
+            btn.innerHTML = `<span>Error occurred</span>`;
+            btn.classList.remove('loading');
+            btn.classList.add('error');
+        } finally {
+            analysisInProgress.delete('profile_' + username);
+            btn.disabled = false;
+        }
+    }
 
     // ── Main injection logic ──────────────────────────────────
     function tryInjectButton() {
@@ -292,9 +435,18 @@
         const m = json.data?.xdt_shortcode_media;
         if (!m) throw new Error('No media');
 
+        // Try to guess original audio from GraphQL structure
+        let hasOriginalAudio = true;
+        if (m.is_video) {
+            if (m.clips_music_attribution_info) hasOriginalAudio = false;
+            else if (m.edge_media_to_music && m.edge_media_to_music.edges?.length > 0) hasOriginalAudio = false;
+            else if (m.has_audio === false) hasOriginalAudio = false;
+        }
+
         return {
             mediaUrl: m.is_video ? m.video_url : m.display_url,
             isVideo: !!m.is_video,
+            hasOriginalAudio,
             caption: m.edge_media_to_caption?.edges?.[0]?.node?.text || ''
         };
     }
@@ -305,9 +457,21 @@
         const sources = isVideo ? item.video_versions : item.image_versions2?.candidates;
         if (!sources?.length) return null;
         const best = sources.reduce((a, b) => a.width > b.width ? a : b, sources[0]);
+        
+        let hasOriginalAudio = true;
+        if (isVideo) {
+            if (item.clips_metadata) {
+                // If it has music_info, it's typically a licensed track
+                hasOriginalAudio = !!item.clips_metadata.original_sound_info && !item.clips_metadata.music_info;
+            } else if (item.has_audio === false) {
+                hasOriginalAudio = false;
+            }
+        }
+
         return {
             mediaUrl: best.url,
             isVideo,
+            hasOriginalAudio,
             caption: item.caption?.text || ''
         };
     }
@@ -343,6 +507,7 @@
                 shortcode,
                 mediaUrl: data.mediaUrl,
                 mediaType: data.isVideo ? 'video' : 'image',
+                hasOriginalAudio: !!data.hasOriginalAudio,
                 caption: data.caption,
                 thumbnailsBase64: await extractThumbnails(data.mediaUrl, data.isVideo)
             });
@@ -398,13 +563,75 @@
                     <div class="instaguard-bar"><div class="instaguard-bar-fill" style="width:${aiScore}%;background:${col(aiScore)}"></div></div>
                     <span>${aiScore}%</span>
                 </div>
-                <div class="instaguard-row">
+                <div class="instaguard-row" style="margin-bottom:8px">
                     <span>Misinformation</span>
                     <div class="instaguard-bar"><div class="instaguard-bar-fill" style="width:${misScore}%;background:${col(misScore)}"></div></div>
                     <span>${misScore}%</span>
                 </div>
-                ${(analysis.aiGenerated?.reasons || []).slice(0, 2).map(r => `<p class="instaguard-note">• ${r}</p>`).join('')}
+                ${(analysis.aiGenerated?.reasons || []).slice(0, 2).map(r => `<p class="instaguard-note">🤖 ${r}</p>`).join('')}
+                
+                ${analysis.misinformation?.audioSummary ? `<div class="instaguard-mini-summary"><b>Audio:</b> ${analysis.misinformation.audioSummary}</div>` : ''}
+                
+                ${(analysis.misinformation?.claims || []).map((c, i) => {
+                    const corr = analysis.misinformation?.corrections?.[i];
+                    return `<div class="instaguard-factcheck">
+                        <p class="instaguard-claim">❌ <b>Claim:</b> ${c}</p>
+                        ${corr ? `<p class="instaguard-correction">✅ <b>Fact:</b> ${corr}</p>` : ''}
+                    </div>`;
+                }).join('')}
                 ${analysis.summary ? `<p class="instaguard-summary">"${analysis.summary}"</p>` : ''}
+            </div>`;
+
+        badge.querySelector('.instaguard-badge-header').addEventListener('click', (e) => {
+            e.stopPropagation();
+            const body = badge.querySelector('.instaguard-badge-body');
+            const toggle = badge.querySelector('.instaguard-badge-toggle');
+            if (body.hidden) { body.hidden = false; toggle.textContent = '▲'; }
+            else             { body.hidden = true;  toggle.textContent = '▼'; }
+        });
+
+        btn.replaceWith(badge);
+    }
+
+    // ── Render profile result badge ───────────────────────────
+    function showProfileResult(btn, analysis, username) {
+        const aiScore = analysis.aiGeneratedScore ?? 0;
+        const misScore = analysis.misinformationScore ?? 0;
+        
+        // Trust score is the inverse of the highest penalty
+        const penalty = Math.max(aiScore, misScore);
+        const trustScore = 100 - penalty;
+
+        let cls, icon, label;
+        if (trustScore < 40)        { cls = 'danger';  icon = '🚨'; label = `Low Trust (${trustScore}%)`; }
+        else if (trustScore < 80)   { cls = 'warning'; icon = '⚠️'; label = `Medium Trust (${trustScore}%)`; }
+        else                        { cls = 'safe';    icon = '✅'; label = `Highly Trusted (${trustScore}%)`; }
+
+        const badge = document.createElement('div');
+        badge.className = `instaguard-badge instaguard-${cls}`;
+        badge.style.width = '100%';
+        badge.style.maxWidth = '100%';
+        badge.dataset.username = username;
+
+        badge.innerHTML = `
+            <div class="instaguard-badge-header">
+                <span>${icon}</span>
+                <span class="instaguard-badge-label">Profile Reliability: ${label}</span>
+                <span class="instaguard-badge-toggle">▼</span>
+            </div>
+            <div class="instaguard-badge-body" hidden>
+                <div class="instaguard-row">
+                    <span>Avg AI Content</span>
+                    <div class="instaguard-bar"><div class="instaguard-bar-fill" style="width:${aiScore}%;background:${col(aiScore)}"></div></div>
+                    <span>${aiScore}%</span>
+                </div>
+                <div class="instaguard-row" style="margin-bottom:8px">
+                    <span>Avg Misinfo</span>
+                    <div class="instaguard-bar"><div class="instaguard-bar-fill" style="width:${misScore}%;background:${col(misScore)}"></div></div>
+                    <span>${misScore}%</span>
+                </div>
+                <p class="instaguard-note">Analysis based on the ${analysis.postsAnalyzedCount} most recent reels/posts.</p>
+                ${analysis.summary ? `<p class="instaguard-summary">"Overall Profile: ${analysis.summary}"</p>` : ''}
             </div>`;
 
         badge.querySelector('.instaguard-badge-header').addEventListener('click', (e) => {

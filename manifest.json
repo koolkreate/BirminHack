@@ -13,8 +13,10 @@
         "activeTab"
     ],
     "host_permissions": [
-        "https://www.instagram.com/*",
-        "https://gen.pollinations.ai/*"
+        "https://*.instagram.com/*",
+        "https://*.cdninstagram.com/*",
+        "https://gen.pollinations.ai/*",
+        "https://api.elevenlabs.io/*"
     ],
     "action": {
         "default_icon": "icons/icon128.png",

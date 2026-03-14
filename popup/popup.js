@@ -5,16 +5,21 @@
 
 document.addEventListener('DOMContentLoaded', async () => {
     const apiKeyInput = document.getElementById('api-key-input');
+    const elevenLabsKeyInput = document.getElementById('elevenlabs-api-key-input');
     const toggleEnabled = document.getElementById('toggle-enabled');
     const saveBtn = document.getElementById('save-btn');
     const revealBtn = document.getElementById('reveal-btn');
+    const elevenLabsRevealBtn = document.getElementById('elevenlabs-reveal-btn');
     const statusBar = document.getElementById('status-bar');
+
+    const defaultElevenLabsKey = 'sk_242029524305339d19a34edc22d8e75af631fda8973ca4d2';
 
     // ── Load existing settings ──────────────────────────────
     try {
         const settings = await chrome.runtime.sendMessage({ type: 'GET_SETTINGS' });
         if (settings) {
             apiKeyInput.value = settings.apiKey || '';
+            if (elevenLabsKeyInput) elevenLabsKeyInput.value = settings.elevenLabsKey || defaultElevenLabsKey;
             toggleEnabled.checked = settings.enabled !== false;
             updateStatus(settings);
         }
@@ -26,6 +31,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     saveBtn.addEventListener('click', async () => {
         const settings = {
             apiKey: apiKeyInput.value.trim(),
+            elevenLabsKey: elevenLabsKeyInput ? elevenLabsKeyInput.value.trim() : '',
             enabled: toggleEnabled.checked
         };
 
@@ -55,10 +61,19 @@ document.addEventListener('DOMContentLoaded', async () => {
         revealBtn.textContent = isPassword ? '🙈' : '👁';
     });
 
+    if (elevenLabsRevealBtn) {
+        elevenLabsRevealBtn.addEventListener('click', () => {
+            const isPassword = elevenLabsKeyInput.type === 'password';
+            elevenLabsKeyInput.type = isPassword ? 'text' : 'password';
+            elevenLabsRevealBtn.textContent = isPassword ? '🙈' : '👁';
+        });
+    }
+
     // ── Toggle enabled state ────────────────────────────────
     toggleEnabled.addEventListener('change', async () => {
         const settings = {
             apiKey: apiKeyInput.value.trim(),
+            elevenLabsKey: elevenLabsKeyInput ? elevenLabsKeyInput.value.trim() : '',
             enabled: toggleEnabled.checked
         };
         try {
