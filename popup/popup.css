@@ -1,0 +1,245 @@
+/* ============================================================
+   InstaGuard — Popup Styles
+   ============================================================ */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    width: 320px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #0f0f1a;
+    color: #e0e0e0;
+}
+
+.popup-container {
+    padding: 16px;
+}
+
+/* ── Header ──────────────────────────────────────────────── */
+.popup-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+}
+
+.popup-logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.popup-logo img {
+    border-radius: 6px;
+}
+
+.popup-logo h1 {
+    font-size: 16px;
+    font-weight: 700;
+    background: linear-gradient(135deg, #6C3CE1, #00D4FF);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    line-height: 1.2;
+}
+
+.popup-subtitle {
+    font-size: 10px;
+    color: #888;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+
+/* ── Toggle Switch ───────────────────────────────────────── */
+.popup-toggle {
+    position: relative;
+    display: inline-block;
+    width: 42px;
+    height: 24px;
+    cursor: pointer;
+}
+
+.popup-toggle input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.popup-toggle-slider {
+    position: absolute;
+    inset: 0;
+    background: #333;
+    border-radius: 12px;
+    transition: background 0.3s ease;
+}
+
+.popup-toggle-slider::before {
+    content: '';
+    position: absolute;
+    width: 18px;
+    height: 18px;
+    left: 3px;
+    bottom: 3px;
+    background: #fff;
+    border-radius: 50%;
+    transition: transform 0.3s ease;
+}
+
+.popup-toggle input:checked + .popup-toggle-slider {
+    background: linear-gradient(135deg, #6C3CE1, #00D4FF);
+}
+
+.popup-toggle input:checked + .popup-toggle-slider::before {
+    transform: translateX(18px);
+}
+
+/* ── Status Bar ──────────────────────────────────────────── */
+.popup-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    margin-bottom: 14px;
+    font-size: 12px;
+}
+
+.popup-status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #555;
+    flex-shrink: 0;
+    transition: background 0.3s ease;
+}
+
+.popup-status.active .popup-status-dot {
+    background: #22c55e;
+    box-shadow: 0 0 6px rgba(34, 197, 94, 0.5);
+}
+
+.popup-status.inactive .popup-status-dot {
+    background: #f59e0b;
+}
+
+.popup-status.error .popup-status-dot {
+    background: #ef4444;
+}
+
+.popup-status-text {
+    color: #aaa;
+}
+
+/* ── Input Section ───────────────────────────────────────── */
+.popup-section {
+    margin-bottom: 14px;
+}
+
+.popup-label {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: #888;
+    margin-bottom: 6px;
+}
+
+.popup-input-group {
+    display: flex;
+    gap: 4px;
+}
+
+.popup-input {
+    flex: 1;
+    padding: 10px 12px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.05);
+    color: #e0e0e0;
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.2s ease;
+}
+
+.popup-input:focus {
+    border-color: #6C3CE1;
+}
+
+.popup-input::placeholder {
+    color: #555;
+}
+
+.popup-reveal-btn {
+    padding: 0 10px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.05);
+    color: #888;
+    cursor: pointer;
+    transition: background 0.2s ease;
+    font-size: 14px;
+}
+
+.popup-reveal-btn:hover {
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.popup-help-link {
+    display: inline-block;
+    margin-top: 6px;
+    font-size: 11px;
+    color: #00D4FF;
+    text-decoration: none;
+    transition: opacity 0.2s ease;
+}
+
+.popup-help-link:hover {
+    opacity: 0.8;
+    text-decoration: underline;
+}
+
+/* ── Save Button ─────────────────────────────────────────── */
+.popup-save-btn {
+    width: 100%;
+    padding: 10px;
+    border: none;
+    border-radius: 8px;
+    background: linear-gradient(135deg, #6C3CE1 0%, #00D4FF 100%);
+    color: #fff;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    letter-spacing: 0.3px;
+}
+
+.popup-save-btn:hover {
+    filter: brightness(1.1);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(108, 60, 225, 0.3);
+}
+
+.popup-save-btn:active {
+    transform: translateY(0);
+}
+
+.popup-save-btn.saved {
+    background: linear-gradient(135deg, #047857, #22c55e);
+}
+
+/* ── Footer ──────────────────────────────────────────────── */
+.popup-footer {
+    margin-top: 14px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    text-align: center;
+    font-size: 10px;
+    color: #555;
+}

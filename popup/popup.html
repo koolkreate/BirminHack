@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>InstaGuard Settings</title>
+    <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+    <div class="popup-container">
+        <!-- Header -->
+        <div class="popup-header">
+            <div class="popup-logo">
+                <img src="../icons/icon48.png" alt="InstaGuard" width="28" height="28">
+                <div>
+                    <h1>InstaGuard</h1>
+                    <span class="popup-subtitle">AI & Misinfo Detector</span>
+                </div>
+            </div>
+            <div class="popup-toggle-wrap">
+                <label class="popup-toggle" id="toggle-label">
+                    <input type="checkbox" id="toggle-enabled" checked>
+                    <span class="popup-toggle-slider"></span>
+                </label>
+            </div>
+        </div>
+
+        <!-- Status -->
+        <div class="popup-status" id="status-bar">
+            <span class="popup-status-dot"></span>
+            <span class="popup-status-text">Checking...</span>
+        </div>
+
+        <!-- API Key -->
+        <div class="popup-section">
+            <label class="popup-label" for="api-key-input">Gemini API Key</label>
+            <div class="popup-input-group">
+                <input
+                    type="password"
+                    id="api-key-input"
+                    class="popup-input"
+                    placeholder="Enter your Gemini API key"
+                    autocomplete="off"
+                >
+                <button class="popup-reveal-btn" id="reveal-btn" title="Show/hide key">
+                    👁
+                </button>
+            </div>
+            <a href="https://aistudio.google.com/apikey" target="_blank" class="popup-help-link">
+                Get a free API key →
+            </a>
+        </div>
+
+        <!-- Save Button -->
+        <button class="popup-save-btn" id="save-btn">Save Settings</button>
+
+        <!-- Footer -->
+        <div class="popup-footer">
+            <span>Built for BirminHack 2026</span>
+        </div>
+    </div>
+
+    <script src="popup.js"></script>
+</body>
+</html>

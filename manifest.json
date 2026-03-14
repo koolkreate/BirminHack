@@ -1,0 +1,50 @@
+{
+    "name": "InstaGuard — AI & Misinfo Detector",
+    "description": "Detect AI-generated images/videos and misinformation on Instagram using Gemini AI",
+    "version": "1.0.0",
+    "manifest_version": 3,
+    "icons": {
+        "16": "icons/icon16.png",
+        "48": "icons/icon48.png",
+        "128": "icons/icon128.png"
+    },
+    "permissions": [
+        "storage",
+        "activeTab"
+    ],
+    "host_permissions": [
+        "https://www.instagram.com/*",
+        "https://generativelanguage.googleapis.com/*"
+    ],
+    "action": {
+        "default_icon": "icons/icon128.png",
+        "default_popup": "popup/popup.html"
+    },
+    "background": {
+        "service_worker": "src/background.js"
+    },
+    "content_scripts": [
+        {
+            "matches": [
+                "https://www.instagram.com/*"
+            ],
+            "js": [
+                "src/content.js"
+            ],
+            "css": [
+                "src/overlay.css"
+            ],
+            "run_at": "document_idle"
+        },
+        {
+            "matches": [
+                "https://www.instagram.com/*"
+            ],
+            "js": [
+                "src/detector.js"
+            ],
+            "world": "MAIN",
+            "run_at": "document_idle"
+        }
+    ]
+}
