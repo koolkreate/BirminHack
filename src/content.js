@@ -36,19 +36,43 @@
     }
 
     let lastHref = window.location.href;
+    let reelPollInterval = null;
+
+    // Navigation observer for SPA page changes
     const navObserver = new MutationObserver(() => {
         const currentHref = window.location.href;
         if (currentHref !== lastHref) {
             lastHref = currentHref;
-            // request fresh headers and try injecting button
             window.postMessage({ type: 'INSTAGUARD_REQUEST_HEADERS' }, '*');
-            setTimeout(tryInjectButton, 900);
-        } else if (currentHref.includes('/reel') || currentHref.includes('/reels')) {
-            // Actively try to inject on reel scroll, since URL might not change fast enough
-            tryInjectButton();
+            setTimeout(tryInjectButton, 600);
+            // Start/stop reel polling based on page type
+            manageReelPolling();
         }
     });
     navObserver.observe(document.documentElement, { childList: true, subtree: true });
+
+    // Reel polling: checks every second if the current reel has a scan button.
+    // This is much more reliable than scroll/mutation events because Instagram's
+    // reel scroller updates the URL asynchronously.
+    function manageReelPolling() {
+        if (window.location.pathname.includes('/reel')) {
+            if (!reelPollInterval) {
+                reelPollInterval = setInterval(() => {
+                    const sc = getShortcodeFromURL();
+                    if (sc && !document.querySelector(`[data-ig="${sc}"]`)) {
+                        tryInjectButton();
+                    }
+                }, 1000);
+            }
+        } else {
+            if (reelPollInterval) {
+                clearInterval(reelPollInterval);
+                reelPollInterval = null;
+            }
+        }
+    }
+    // Start polling if we're already on a reel page
+    manageReelPolling();
 
     // ── Main injection logic ──────────────────────────────────
     function tryInjectButton() {
@@ -56,76 +80,123 @@
         if (!shortcode) return;
         if (document.querySelector(`[data-ig="${shortcode}"]`)) return;
 
-        // Use a MutationObserver to wait for the right DOM element to appear
-        if (injectionObserver) injectionObserver.disconnect();
+        // Try immediately first
+        const anchored = findInsertionPoint();
+        if (anchored) {
+            insertButton(anchored, shortcode);
+            return;
+        }
 
+        // If not found, use a MutationObserver to wait for DOM to render
+        if (injectionObserver) injectionObserver.disconnect();
         let attempts = 0;
         injectionObserver = new MutationObserver(() => {
             attempts++;
-            if (attempts > 200) { injectionObserver.disconnect(); return; }
-
-            const anchored = findInsertionPoint(shortcode);
-            if (anchored) {
+            if (attempts > 100) { injectionObserver.disconnect(); return; }
+            const a = findInsertionPoint();
+            if (a) {
                 injectionObserver.disconnect();
-                insertButton(anchored, shortcode);
+                insertButton(a, shortcode);
             }
         });
         injectionObserver.observe(document.body, { childList: true, subtree: true });
-
-        // Also try immediately
-        const anchored = findInsertionPoint(shortcode);
-        if (anchored) {
-            injectionObserver.disconnect();
-            insertButton(anchored, shortcode);
-        }
     }
 
     /*
-     * Find the best insertion point.
-     * Strategy: look for the three-dot "more options" button (SVG with specific paths)
-     * or a section element that contains the like/comment buttons.
-     * We insert our pill button right before/after that.
+     * Find the best insertion point, scoped to the ACTIVE/VISIBLE reel or post.
+     * Key insight: Instagram's reel scroller keeps multiple reels in the DOM.
+     * We must find the one that's actually visible in the viewport.
      */
-    function findInsertionPoint(shortcode) {
-        // ── Strategy 1: Reel/Post page - find the right-column action buttons ──
-        // On a reel page the actions (like, comment, share, ...) are a vertical column
-        // The "..." button is typically the last one. We insert after it.
+    function findInsertionPoint() {
+        // First, identify the active container (the one currently visible)
+        const activeContainer = findActiveContainer();
 
-        // Look for the More-options SVG (three-dot menu button)
-        const moreButtons = document.querySelectorAll('button, div[role="button"]');
-        for (const btn of moreButtons) {
-            const svgs = btn.querySelectorAll('svg');
-            for (const svg of svgs) {
-                if (svg.getAttribute('aria-label') === 'More options' ||
-                    svg.getAttribute('aria-label') === 'More') {
+        if (activeContainer) {
+            // Search for "More options" only within the active container
+            const moreButtons = activeContainer.querySelectorAll('button, div[role="button"]');
+            for (const btn of moreButtons) {
+                const svg = btn.querySelector('svg[aria-label="More options"], svg[aria-label="More"]');
+                if (svg) {
+                    // Don't insert next to a button that already has our scan button as a sibling
+                    if (btn.nextSibling?.dataset?.ig) continue;
                     return { type: 'after', element: btn };
                 }
             }
-        }
 
-        // ── Strategy 2: look for section with SVG action buttons ──
-        const svgLike = document.querySelector('svg[aria-label="Like"], svg[aria-label="Unlike"]');
-        if (svgLike) {
-            // Walk up to find the section or row container
-            let el = svgLike;
-            for (let i = 0; i < 8; i++) {
-                if (!el.parentElement) break;
-                el = el.parentElement;
-                const tag = el.tagName.toLowerCase();
-                if (tag === 'section' || (el.children.length > 2 && el.getAttribute('role') !== 'button')) {
-                    return { type: 'append', element: el };
+            // Fallback: look for Like button section within active container
+            const svgLike = activeContainer.querySelector('svg[aria-label="Like"], svg[aria-label="Unlike"]');
+            if (svgLike) {
+                let el = svgLike;
+                for (let i = 0; i < 8; i++) {
+                    if (!el.parentElement || el.parentElement === activeContainer) break;
+                    el = el.parentElement;
+                    if (el.tagName.toLowerCase() === 'section' || (el.children.length > 2 && el.getAttribute('role') !== 'button')) {
+                        return { type: 'append', element: el };
+                    }
                 }
+            }
+
+            // Fallback: overlay on the video itself
+            const video = activeContainer.querySelector('video');
+            if (video) {
+                return { type: 'overlay', element: video.parentElement || activeContainer };
             }
         }
 
-        // ── Strategy 3: fallback - just look for any article/main and a video ──
-        const video = document.querySelector('video[src], video > source');
-        if (video) {
-            const parent = video.closest('article') || video.parentElement;
-            if (parent) return { type: 'overlay', element: video.parentElement || parent };
+        // Global fallback (for non-reel pages like /p/ posts)
+        const moreButtons = document.querySelectorAll('button, div[role="button"]');
+        for (const btn of moreButtons) {
+            const svg = btn.querySelector('svg[aria-label="More options"], svg[aria-label="More"]');
+            if (svg && !btn.nextSibling?.dataset?.ig) {
+                return { type: 'after', element: btn };
+            }
         }
 
         return null;
+    }
+
+    /*
+     * Find the reel/post container that is currently visible in the viewport.
+     * For reels: find all videos, check which one is in the viewport center.
+     * For posts: find article or dialog.
+     */
+    function findActiveContainer() {
+        const viewportCenter = window.innerHeight / 2;
+
+        // For reels: find the video element closest to viewport center
+        const videos = document.querySelectorAll('video');
+        if (videos.length > 0) {
+            let closest = null;
+            let closestDist = Infinity;
+
+            for (const video of videos) {
+                const rect = video.getBoundingClientRect();
+                // Check if visible in viewport
+                if (rect.bottom < 0 || rect.top > window.innerHeight) continue;
+                const dist = Math.abs((rect.top + rect.bottom) / 2 - viewportCenter);
+                if (dist < closestDist) {
+                    closestDist = dist;
+                    closest = video;
+                }
+            }
+
+            if (closest) {
+                // Walk up to find a meaningful container (usually 4-6 levels up from the video)
+                let container = closest;
+                for (let i = 0; i < 8; i++) {
+                    if (!container.parentElement) break;
+                    container = container.parentElement;
+                    // A good container usually has multiple children including action buttons
+                    const hasActions = container.querySelector('svg[aria-label="Like"], svg[aria-label="More options"], svg[aria-label="More"]');
+                    if (hasActions) return container;
+                }
+                // Fallback: return a reasonable parent
+                return closest.parentElement?.parentElement?.parentElement || closest.parentElement;
+            }
+        }
+
+        // For regular posts: dialog or article
+        return document.querySelector('div[role="dialog"]') || document.querySelector('article[role="presentation"]') || document.querySelector('article');
     }
 
     function insertButton({ type, element }, shortcode) {
