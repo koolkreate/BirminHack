@@ -35,14 +35,17 @@
         return m ? m[2] : null;
     }
 
-    // ── Watch for URL changes (SPA) ───────────────────────────
     let lastHref = window.location.href;
     const navObserver = new MutationObserver(() => {
-        if (window.location.href !== lastHref) {
-            lastHref = window.location.href;
+        const currentHref = window.location.href;
+        if (currentHref !== lastHref) {
+            lastHref = currentHref;
             // request fresh headers and try injecting button
             window.postMessage({ type: 'INSTAGUARD_REQUEST_HEADERS' }, '*');
             setTimeout(tryInjectButton, 900);
+        } else if (currentHref.includes('/reel') || currentHref.includes('/reels')) {
+            // Actively try to inject on reel scroll, since URL might not change fast enough
+            tryInjectButton();
         }
     });
     navObserver.observe(document.documentElement, { childList: true, subtree: true });
@@ -270,7 +273,7 @@
                 mediaUrl: data.mediaUrl,
                 mediaType: data.isVideo ? 'video' : 'image',
                 caption: data.caption,
-                thumbnailBase64: await extractThumbnail(data.mediaUrl, data.isVideo)
+                thumbnailsBase64: await extractThumbnails(data.mediaUrl, data.isVideo)
             });
 
             if (result.error) {
@@ -289,10 +292,11 @@
         }
     }
 
-    // ── Render result badge ───────────────────────────────────
+        // ── Render result badge ───────────────────────────────────
     function showResult(btn, analysis) {
         const aiScore = analysis.aiGenerated?.score ?? 0;
         const misScore = analysis.misinformation?.score ?? 0;
+        
         const isAiSus = aiScore >= 50;
         const isMisSus = misScore >= 50;
 
@@ -367,44 +371,59 @@
     setTimeout(tryInjectButton, 1500);
 
     // ── Thumbnail extraction (runs in page context with DOM access) ──
-    // For videos: extract a single JPEG frame (~200 tokens) instead of
-    // uploading the full video (~7,700 tokens for a 30s reel).
-    function extractThumbnail(mediaUrl, isVideo) {
+    // For videos: extract up to 10 JPEG frames (~2000 tokens)
+    function extractThumbnails(mediaUrl, isVideo) {
         return new Promise((resolve) => {
             if (isVideo) {
                 const video = document.createElement('video');
                 const canvas = document.createElement('canvas');
                 const ctx = canvas.getContext('2d');
+                const frames = [];
+                const maxFrames = 10;
 
                 video.crossOrigin = 'anonymous';
                 video.preload = 'metadata';
                 video.muted = true;
                 video.src = mediaUrl;
 
-                const done = () => {
+                const captureFrame = () => {
                     try {
                         canvas.width = video.videoWidth || 640;
                         canvas.height = video.videoHeight || 360;
                         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                        resolve(canvas.toDataURL('image/jpeg', 0.85).split(',')[1]);
+                        frames.push(canvas.toDataURL('image/jpeg', 0.85).split(',')[1]);
                     } catch {
-                        resolve(null); // background will fall back to fetch
+                        // Ignore frame capture error
                     }
                 };
 
+                const processFrames = async () => {
+                    const duration = video.duration || 10;
+                    for (let i = 0; i < maxFrames; i++) {
+                        const timeTarget = (duration / maxFrames) * i + 0.5;
+                        video.currentTime = Math.min(timeTarget, duration - 0.1);
+                        await new Promise(r => {
+                            const onSeeked = () => { video.removeEventListener('seeked', onSeeked); r(); };
+                            video.addEventListener('seeked', onSeeked);
+                            setTimeout(() => { video.removeEventListener('seeked', onSeeked); r(); }, 1500);
+                        });
+                        captureFrame();
+                    }
+                    resolve(frames.length ? frames : null);
+                };
+
                 video.addEventListener('loadedmetadata', () => {
-                    video.currentTime = Math.min(video.duration * 0.1, 2);
+                    processFrames();
                 });
-                video.addEventListener('seeked', done);
                 video.addEventListener('error', () => resolve(null));
-                setTimeout(() => resolve(null), 8000); // timeout safeguard
+                setTimeout(() => resolve(frames.length ? frames : null), 20000); // timeout safeguard
             } else {
                 // For images: fetch and encode here (avoids CORS issues in service worker)
                 fetch(mediaUrl)
                     .then(r => r.blob())
                     .then(blob => new Promise((res, rej) => {
                         const reader = new FileReader();
-                        reader.onloadend = () => res(reader.result.split(',')[1]);
+                        reader.onloadend = () => res([reader.result.split(',')[1]]);
                         reader.onerror = rej;
                         reader.readAsDataURL(blob);
                     }))

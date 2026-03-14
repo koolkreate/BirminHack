@@ -15,9 +15,21 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     });
 
+    const clearCacheBtn = document.getElementById('clear-cache-btn');
+
     clearBtn.addEventListener('click', async () => {
         await chrome.runtime.sendMessage({ type: 'CLEAR_LOGS' });
         logContainer.innerHTML = '';
+    });
+
+    clearCacheBtn.addEventListener('click', async () => {
+        chrome.runtime.sendMessage({ type: 'CLEAR_CACHE' }, (response) => {
+            if (response && response.success) {
+                const originalText = clearCacheBtn.innerText;
+                clearCacheBtn.innerText = 'Cleared!';
+                setTimeout(() => clearCacheBtn.innerText = originalText, 1500);
+            }
+        });
     });
 
     function addLogEntry(log) {
