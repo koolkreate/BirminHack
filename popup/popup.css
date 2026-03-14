@@ -239,7 +239,18 @@ body {
     margin-top: 14px;
     padding-top: 10px;
     border-top: 1px solid rgba(255, 255, 255, 0.06);
-    text-align: center;
     font-size: 10px;
     color: #555;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.popup-debug-link {
+    color: #00D4FF;
+    text-decoration: none;
+    font-size: 10px;
+}
+.popup-debug-link:hover {
+    text-decoration: underline;
 }

@@ -7,6 +7,20 @@ const GEMINI_MODEL = 'gemini-2.0-flash';
 // In-memory cache for this service worker session
 const SESSION_CACHE = new Map();
 
+// ── Debug Logger ────────────────────────────────────────────
+const DEBUG_LOGS = [];
+function logDebug(message, data = null, level = 'info') {
+    const entry = { timestamp: Date.now(), message, data, level };
+    DEBUG_LOGS.push(entry);
+    if (DEBUG_LOGS.length > 100) DEBUG_LOGS.shift(); // keep last 100 logs
+    
+    // Broadcast to any open debug pages
+    chrome.runtime.sendMessage({ type: 'NEW_LOG', log: entry }).catch(() => {});
+    
+    if (level === 'error') console.error('[InstaGuard]', message, data || '');
+    else console.log('[InstaGuard]', message, data || '');
+}
+
 // ── Persistent cache backed by chrome.storage.local ─────────
 async function getCached(shortcode) {
     if (SESSION_CACHE.has(shortcode)) return SESSION_CACHE.get(shortcode);
@@ -39,6 +53,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         saveSettings(message.settings).then(sendResponse);
         return true;
     }
+    if (message.type === 'GET_LOGS') {
+        sendResponse({ logs: DEBUG_LOGS });
+        return true;
+    }
+    if (message.type === 'CLEAR_LOGS') {
+        DEBUG_LOGS.length = 0;
+        sendResponse({ success: true });
+        return true;
+    }
 });
 
 // ── Settings management ─────────────────────────────────────
@@ -63,24 +86,26 @@ async function handleAnalysis({ shortcode, mediaUrl, mediaType, caption, thumbna
 
     const settings = await getSettings();
     if (!settings.apiKey) {
-        return { error: 'NO_API_KEY', message: 'Please set your Gemini API key in the extension popup.' };
+        return { error: 'NO_API_KEY', message: 'Please set your G4F Token in the extension popup.' };
     }
     if (!settings.enabled) {
         return { error: 'DISABLED', message: 'InstaGuard is disabled.' };
     }
 
     try {
-        const result = await analyzeWithGemini(settings.apiKey, mediaUrl, mediaType, caption, thumbnailBase64);
+        logDebug('Starting analysis', { shortcode, mediaType });
+        const result = await analyzeWithPollinations(settings.apiKey, mediaUrl, mediaType, caption, thumbnailBase64);
+        logDebug('Analysis complete', { shortcode, success: result.success });
         await setCached(shortcode, result);
         return result;
     } catch (err) {
-        console.error('[InstaGuard] Analysis error:', err);
+        logDebug('Analysis error', { message: err.message }, 'error');
         return { error: 'ANALYSIS_FAILED', message: err.message };
     }
 }
 
-// ── Gemini API call ─────────────────────────────────────────
-async function analyzeWithGemini(apiKey, mediaUrl, mediaType, caption, thumbnailBase64) {
+// ── Pollinations API call ─────────────────────────────────────────
+async function analyzeWithPollinations(apiKey, mediaUrl, mediaType, caption, thumbnailBase64) {
     const isVideo = mediaType === 'video';
 
     let base64Data;
@@ -95,44 +120,62 @@ async function analyzeWithGemini(apiKey, mediaUrl, mediaType, caption, thumbnail
     }
 
     const prompt = buildPrompt(caption, isVideo);
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
+    const apiUrl = `https://text.pollinations.ai/openai`;
 
     const requestBody = {
-        contents: [{
-            parts: [
-                { inline_data: { mime_type: 'image/jpeg', data: base64Data } },
-                { text: prompt }
-            ]
-        }],
-        generationConfig: {
-            temperature: 0.1,
-            responseMimeType: 'application/json'
-        }
+        model: "openai",
+        messages: [
+            {
+                role: "user",
+                content: [
+                    { type: "text", text: prompt },
+                    { type: "image_url", image_url: { url: `data:image/jpeg;base64,${base64Data}` } }
+                ]
+            }
+        ]
     };
+
+    logDebug('Pollinations Raw Request Body', requestBody);
 
     const response = await fetch(apiUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`
+        },
         body: JSON.stringify(requestBody)
     });
 
+    logDebug('Pollinations Response Status', { status: response.status, ok: response.ok });
+
     if (!response.ok) {
         const errText = await response.text();
-        throw new Error(`Gemini API error ${response.status}: ${errText}`);
+        logDebug('Pollinations Error Response', { error: errText }, 'error');
+        throw new Error(`Pollinations API error ${response.status}: ${errText}`);
     }
 
-    const json = await response.json();
-    const text = json.candidates?.[0]?.content?.parts?.[0]?.text;
+    const text = await response.text();
+    logDebug('Pollinations Raw Text Response', { text });
 
-    if (!text) {
-        throw new Error('Empty response from Gemini');
+    let json;
+    try {
+        json = JSON.parse(text);
+    } catch (e) {
+        throw new Error('Failed to parse Pollinations response as JSON');
+    }
+
+    const responseContent = json.choices?.[0]?.message?.content;
+
+    if (!responseContent) {
+        throw new Error('Empty response content from Pollinations');
     }
 
     try {
-        const analysis = JSON.parse(text);
+        const analysis = JSON.parse(responseContent);
         return { success: true, analysis };
     } catch (e) {
-        // If Gemini didn't return valid JSON, wrap the text
+        logDebug('Failed to parse inner content as JSON, falling back', { returnedText: responseContent });
+        // If Pollinations didn't return valid JSON, wrap the text
         return {
             success: true,
             analysis: {

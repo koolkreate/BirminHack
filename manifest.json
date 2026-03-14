@@ -14,7 +14,7 @@
     ],
     "host_permissions": [
         "https://www.instagram.com/*",
-        "https://generativelanguage.googleapis.com/*"
+        "https://text.pollinations.ai/*"
     ],
     "action": {
         "default_icon": "icons/icon128.png",

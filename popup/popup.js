@@ -81,7 +81,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             statusText.textContent = 'Extension disabled';
         } else if (!settings.apiKey) {
             statusBar.classList.add('error');
-            statusText.textContent = 'No API key set — enter key below';
+            statusText.textContent = 'No token set — enter token below';
         } else {
             statusBar.classList.add('active');
             statusText.textContent = 'Active — ready to scan posts';
