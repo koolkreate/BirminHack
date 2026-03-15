@@ -132,10 +132,12 @@
         return btn;
     }
 
-    function createProfileContainer(platform) {
+    function createProfileContainer(platform, accountId = '', label = '') {
         const wrapper = document.createElement('div');
         wrapper.className = 'instaguard-profile-trust-wrapper';
         wrapper.dataset.platform = platform;
+        wrapper.dataset.accountId = accountId;
+        wrapper.dataset.label = label || accountId;
         wrapper.style.display = 'flex';
         wrapper.style.alignItems = 'center';
         wrapper.style.marginTop = platform === 'instagram' ? '15px' : '12px';
@@ -197,6 +199,7 @@
 
             analysisResults.set(key, result.analysis);
             showResult(btn, result.analysis);
+            await refreshVisibleProfileTrust(platform, data.account || null);
         } catch (err) {
             console.error('[InstaGuard]', err);
             showError(btn, 'Analysis failed');
@@ -442,6 +445,73 @@
         return true;
     }
 
+    function getCurrentProfileTrustContext(platform) {
+        const wrapper = document.querySelector(`.instaguard-profile-trust-wrapper[data-platform="${platform}"]`);
+
+        if (platform === 'instagram') {
+            const username = getInstagramProfileUsernameFromURL();
+            const accountId = username || wrapper?.dataset.accountId || null;
+            if (!accountId) return null;
+
+            return {
+                accountId,
+                label: wrapper?.dataset.label || username || accountId,
+                wrapper
+            };
+        }
+
+        if (platform === 'youtube') {
+            const account = getCurrentYouTubeAccount();
+            const accountId = account?.id || getYouTubeChannelIdentifier() || wrapper?.dataset.accountId || null;
+            if (!accountId) return null;
+
+            return {
+                accountId,
+                label: wrapper?.dataset.label || account?.displayName || accountId,
+                wrapper
+            };
+        }
+
+        return null;
+    }
+
+    function doesAccountMatchProfile(platform, scannedAccount, profileContext) {
+        if (!scannedAccount || !profileContext?.accountId) return false;
+
+        const scannedIds = [
+            scannedAccount.id,
+            scannedAccount.username,
+            scannedAccount.channelId
+        ]
+            .filter(Boolean)
+            .map((value) => String(value).trim().toLowerCase());
+
+        const profileId = String(profileContext.accountId).trim().toLowerCase();
+        return scannedIds.includes(profileId);
+    }
+
+    async function refreshVisibleProfileTrust(platform, scannedAccount = null) {
+        const profileContext = getCurrentProfileTrustContext(platform);
+        if (!profileContext?.wrapper) return;
+        if (scannedAccount && !doesAccountMatchProfile(platform, scannedAccount, profileContext)) return;
+
+        const existingBadge = profileContext.wrapper.querySelector('.instaguard-badge');
+        const existingButton = profileContext.wrapper.querySelector('.instaguard-scan-btn');
+        if (existingBadge) existingBadge.remove();
+        if (existingButton) existingButton.remove();
+
+        const hasStoredBadge = await renderStoredProfileBadge(
+            profileContext.wrapper,
+            profileContext.accountId,
+            platform,
+            profileContext.label
+        );
+
+        if (!hasStoredBadge && !profileContext.wrapper.querySelector('.instaguard-scan-btn')) {
+            profileContext.wrapper.appendChild(createProfileButton(profileContext.accountId, platform));
+        }
+    }
+
     function showError(btn, msg) {
         btn.classList.remove('loading');
         btn.classList.add('error');
@@ -627,7 +697,7 @@
             return;
         }
 
-        const wrapper = createProfileContainer('instagram');
+        const wrapper = createProfileContainer('instagram', username, username);
         target.appendChild(wrapper);
 
         renderStoredProfileBadge(wrapper, username, 'instagram', username).then((hasStoredBadge) => {
@@ -1073,7 +1143,7 @@
 
         if (!target) return;
 
-        const wrapper = createProfileContainer('youtube');
+        const wrapper = createProfileContainer('youtube', channelId, account?.displayName || channelId);
         target.appendChild(wrapper);
 
         renderStoredProfileBadge(wrapper, channelId, 'youtube', account?.displayName || channelId).then((hasStoredBadge) => {
