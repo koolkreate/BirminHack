@@ -6,6 +6,8 @@
 const GEMINI_MODEL = 'gemini-2.0-flash';
 // In-memory cache for this service worker session
 const SESSION_CACHE = new Map();
+const ACCOUNT_DB_KEY = 'ig_account_reliability_db';
+const MAX_ACCOUNT_POSTS = 25;
 
 // ── Debug Logger ────────────────────────────────────────────
 const DEBUG_LOGS = [];
@@ -39,6 +41,138 @@ async function setCached(cacheKey, result) {
     await chrome.storage.local.set({ [key]: result });
 }
 
+async function getAccountDatabase() {
+    const stored = await chrome.storage.local.get(ACCOUNT_DB_KEY);
+    return stored[ACCOUNT_DB_KEY] || {};
+}
+
+async function saveAccountDatabase(db) {
+    await chrome.storage.local.set({ [ACCOUNT_DB_KEY]: db });
+}
+
+function buildAccountKey(platform, accountId) {
+    return `${platform}:${String(accountId || '').trim().toLowerCase()}`;
+}
+
+function clampScore(score) {
+    const value = Number.isFinite(score) ? score : 0;
+    return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function sortPostsNewestFirst(posts = []) {
+    return [...posts].sort((a, b) => (b.analyzedAt || 0) - (a.analyzedAt || 0));
+}
+
+function computeAccountMetrics(posts = []) {
+    if (!posts.length) {
+        return {
+            aiGeneratedScore: 0,
+            misinformationScore: 0,
+            trustScore: 100,
+            postsAnalyzedCount: 0
+        };
+    }
+
+    const totalAi = posts.reduce((sum, post) => sum + clampScore(post.aiScore), 0);
+    const totalMis = posts.reduce((sum, post) => sum + clampScore(post.misinformationScore), 0);
+    const avgAi = Math.round(totalAi / posts.length);
+    const avgMis = Math.round(totalMis / posts.length);
+    const trustScore = clampScore(100 - Math.round((avgAi * 0.7) + (avgMis * 0.3)));
+
+    return {
+        aiGeneratedScore: avgAi,
+        misinformationScore: avgMis,
+        trustScore,
+        postsAnalyzedCount: posts.length
+    };
+}
+
+function buildAccountSummary(aiScore, misScore, postsCount) {
+    if (postsCount === 0) return 'No analyzed posts stored for this account yet.';
+    if (aiScore > 60 && misScore > 50) return 'This account repeatedly posts AI-generated media and misleading claims.';
+    if (aiScore > 60) return 'This account frequently posts media that appears AI-generated.';
+    if (misScore > 50) return 'This account frequently shares content with misleading factual claims.';
+    if (aiScore > 35 || misScore > 25) return 'This account shows a mixed trust profile across analyzed posts.';
+    return 'This account has looked mostly authentic and reliable across analyzed posts so far.';
+}
+
+async function updateAccountReliability({
+    platform,
+    account,
+    mediaId,
+    analysis
+}) {
+    const accountId = account?.id || account?.username || account?.channelId;
+    if (!platform || !accountId || !analysis) return null;
+
+    const accountKey = buildAccountKey(platform, accountId);
+    const db = await getAccountDatabase();
+    const existing = db[accountKey] || {
+        platform,
+        accountId,
+        displayName: account?.displayName || accountId,
+        username: account?.username || null,
+        channelId: account?.channelId || null,
+        posts: []
+    };
+
+    const nextPost = {
+        mediaId,
+        aiScore: clampScore(analysis.aiGenerated?.score),
+        misinformationScore: clampScore(analysis.misinformation?.score),
+        summary: analysis.summary || '',
+        analyzedAt: Date.now()
+    };
+
+    const filteredPosts = (existing.posts || []).filter((post) => post.mediaId !== mediaId);
+    filteredPosts.push(nextPost);
+    const posts = sortPostsNewestFirst(filteredPosts).slice(0, MAX_ACCOUNT_POSTS);
+    const metrics = computeAccountMetrics(posts);
+
+    db[accountKey] = {
+        ...existing,
+        platform,
+        accountId,
+        displayName: account?.displayName || existing.displayName || accountId,
+        username: account?.username || existing.username || null,
+        channelId: account?.channelId || existing.channelId || null,
+        posts,
+        lastAnalyzedAt: Date.now(),
+        ...metrics,
+        summary: buildAccountSummary(metrics.aiGeneratedScore, metrics.misinformationScore, metrics.postsAnalyzedCount)
+    };
+
+    await saveAccountDatabase(db);
+    return db[accountKey];
+}
+
+async function getAccountReliability(platform, accountId) {
+    if (!platform || !accountId) return null;
+    const db = await getAccountDatabase();
+    return db[buildAccountKey(platform, accountId)] || null;
+}
+
+function buildProfileAnalysisFromAccountRecord(accountRecord) {
+    if (!accountRecord) return null;
+
+    const posts = sortPostsNewestFirst(accountRecord.posts || []);
+    const metrics = computeAccountMetrics(posts);
+    const reasons = posts
+        .map((post) => post.summary)
+        .filter(Boolean)
+        .slice(0, 3);
+
+    return {
+        aiGeneratedScore: metrics.aiGeneratedScore,
+        misinformationScore: metrics.misinformationScore,
+        trustScore: metrics.trustScore,
+        postsAnalyzedCount: metrics.postsAnalyzedCount,
+        recentPostsAnalyzed: 0,
+        reasons,
+        summary: accountRecord.summary || buildAccountSummary(metrics.aiGeneratedScore, metrics.misinformationScore, metrics.postsAnalyzedCount)
+    };
+}
+
 // ── Listen for messages from content script ─────────────────
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'ANALYZE_MEDIA') {
@@ -46,7 +180,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return true; // keep channel open for async response
     }
     if (message.type === 'ANALYZE_PROFILE') {
-        handleProfileAnalysis(message.username, message.shortcodes, sender.tab.id, message.platform || 'instagram').then(sendResponse);
+        handleProfileAnalysis(
+            message.username,
+            message.shortcodes,
+            sender.tab.id,
+            message.platform || 'instagram',
+            message.account || null
+        ).then(sendResponse);
         return true;
     }
     if (message.type === 'GET_SETTINGS') {
@@ -55,6 +195,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     if (message.type === 'SAVE_SETTINGS') {
         saveSettings(message.settings).then(sendResponse);
+        return true;
+    }
+    if (message.type === 'GET_ACCOUNT_RELIABILITY') {
+        getStoredProfileAnalysis(message.platform, message.accountId).then(sendResponse);
         return true;
     }
     if (message.type === 'GET_LOGS') {
@@ -90,12 +234,41 @@ async function saveSettings(settings) {
     return { success: true };
 }
 
+async function getStoredProfileAnalysis(platform, accountId) {
+    const accountRecord = await getAccountReliability(platform, accountId);
+    if (!accountRecord) {
+        return { success: false, analysis: null };
+    }
+
+    return {
+        success: true,
+        analysis: buildProfileAnalysisFromAccountRecord(accountRecord),
+        account: {
+            platform: accountRecord.platform,
+            accountId: accountRecord.accountId,
+            displayName: accountRecord.displayName,
+            username: accountRecord.username,
+            channelId: accountRecord.channelId
+        }
+    };
+}
+
 // ── Main analysis handler ───────────────────────────────────
-async function handleAnalysis({ shortcode, mediaUrl, mediaType, hasOriginalAudio, caption, thumbnailsBase64, platform = 'instagram' }) {
+async function handleAnalysis({ shortcode, mediaUrl, mediaType, hasOriginalAudio, caption, thumbnailsBase64, platform = 'instagram', account = null }) {
     // Check persistent cache first — survives service worker restarts
     const cacheKey = `${platform}_${shortcode}`;
     const cached = await getCached(cacheKey);
-    if (cached) return cached;
+    if (cached) {
+        if (cached.success && cached.analysis) {
+            await updateAccountReliability({
+                platform,
+                account,
+                mediaId: shortcode,
+                analysis: cached.analysis
+            });
+        }
+        return cached;
+    }
 
     const settings = await getSettings();
     if (!settings.apiKey) {
@@ -113,6 +286,14 @@ async function handleAnalysis({ shortcode, mediaUrl, mediaType, hasOriginalAudio
 
         logDebug('Starting analysis', { shortcode, platform, mediaType, hasTranscript: !!transcript });
         const result = await analyzeWithPollinations(settings.apiKey, mediaUrl, mediaType, caption, thumbnailsBase64, transcript, platform);
+        if (result.success && result.analysis) {
+            await updateAccountReliability({
+                platform,
+                account,
+                mediaId: shortcode,
+                analysis: result.analysis
+            });
+        }
         logDebug('Analysis complete', { shortcode, platform, success: result.success });
         await setCached(cacheKey, result);
         return result;
@@ -123,7 +304,7 @@ async function handleAnalysis({ shortcode, mediaUrl, mediaType, hasOriginalAudio
 }
 
 // ── Profile Analysis Handler ──────────────────────────────────────
-async function handleProfileAnalysis(username, shortcodes, tabId, platform = 'instagram') {
+async function handleProfileAnalysis(username, shortcodes, tabId, platform = 'instagram', profileAccount = null) {
     const settings = await getSettings();
     if (!settings.apiKey) {
         return { error: 'NO_API_KEY', message: 'Please set your Pollinations Token.' };
@@ -131,10 +312,7 @@ async function handleProfileAnalysis(username, shortcodes, tabId, platform = 'in
 
     logDebug('Starting profile analysis', { username, shortcodes, platform });
     
-    let totalAi = 0;
-    let totalMis = 0;
     let successfulAnalyses = 0;
-    const reasons = [];
 
     // Analyze up to 3 posts
     for (const code of shortcodes.slice(0, 3)) {
@@ -160,13 +338,11 @@ async function handleProfileAnalysis(username, shortcodes, tabId, platform = 'in
                 mediaType: postData.isVideo ? 'video' : 'image',
                 hasOriginalAudio: postData.hasOriginalAudio,
                 caption: postData.caption || '',
-                platform
+                platform,
+                account: postData.account || profileAccount || { id: username, displayName: username, username }
             });
 
             if (res.success && res.analysis) {
-                totalAi += res.analysis.aiGenerated?.score || 0;
-                totalMis += res.analysis.misinformation?.score || 0;
-                if (res.analysis.summary) reasons.push(res.analysis.summary);
                 successfulAnalyses++;
             }
         } catch (err) {
@@ -178,23 +354,27 @@ async function handleProfileAnalysis(username, shortcodes, tabId, platform = 'in
         return { error: 'ANALYSIS_FAILED', message: 'Could not analyze any posts.' };
     }
 
-    const avgAi = Math.round(totalAi / successfulAnalyses);
-    const avgMis = Math.round(totalMis / successfulAnalyses);
-
-    let summary = '';
-    if (avgAi > 50 && avgMis > 50) summary = 'High rate of AI-generated content and misinformation.';
-    else if (avgAi > 50) summary = 'Frequent use of AI-generated media discovered.';
-    else if (avgMis > 50) summary = 'Frequent spread of factual misinformation detected.';
-    else summary = 'Generally authentic and factually reliable content.';
+    const accountLookupId =
+        profileAccount?.id ||
+        profileAccount?.username ||
+        profileAccount?.channelId ||
+        username;
+    const accountRecord = await getAccountReliability(platform, accountLookupId);
+    const profileAnalysis = buildProfileAnalysisFromAccountRecord(accountRecord);
 
     return {
         success: true,
         analysis: {
-            aiGeneratedScore: avgAi,
-            misinformationScore: avgMis,
-            postsAnalyzedCount: successfulAnalyses,
-            reasons: reasons,
-            summary: summary
+            ...(profileAnalysis || {
+                aiGeneratedScore: 0,
+                misinformationScore: 0,
+                trustScore: 100,
+                postsAnalyzedCount: 0,
+                recentPostsAnalyzed: 0,
+                reasons: [],
+                summary: buildAccountSummary(0, 0, 0)
+            }),
+            recentPostsAnalyzed: successfulAnalyses
         }
     };
 }

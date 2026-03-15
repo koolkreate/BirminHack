@@ -132,6 +132,17 @@
         return btn;
     }
 
+    function createProfileContainer(platform) {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'instaguard-profile-trust-wrapper';
+        wrapper.dataset.platform = platform;
+        wrapper.style.display = 'flex';
+        wrapper.style.alignItems = 'center';
+        wrapper.style.marginTop = platform === 'instagram' ? '15px' : '12px';
+        wrapper.style.marginBottom = platform === 'instagram' ? '15px' : '12px';
+        return wrapper;
+    }
+
     async function fetchMediaData(mediaId, platform) {
         if (platform === 'youtube') return fetchYouTubeVideoData(mediaId);
         return fetchInstagramPostData(mediaId);
@@ -175,7 +186,8 @@
                 hasOriginalAudio: !!data.hasOriginalAudio,
                 caption: data.caption,
                 thumbnailsBase64,
-                platform
+                platform,
+                account: data.account || null
             });
 
             if (result.error) {
@@ -196,6 +208,17 @@
 
     async function startProfileAnalysis(username, btn, platform) {
         const profileKey = `profile_${platform}_${username}`;
+        const profileAccount = platform === 'youtube'
+            ? (getCurrentYouTubeAccount() || {
+                id: username,
+                username,
+                displayName: username
+            })
+            : {
+                id: username,
+                username,
+                displayName: username
+            };
         if (analysisInProgress.has(profileKey)) return;
 
         btn.classList.add('loading');
@@ -221,7 +244,8 @@
                 type: 'ANALYZE_PROFILE',
                 username,
                 shortcodes: mediaIds,
-                platform
+                platform,
+                account: profileAccount
             });
 
             if (result.success) {
@@ -328,8 +352,7 @@
     function showProfileResult(btn, analysis, username) {
         const aiScore = analysis.aiGeneratedScore ?? 0;
         const misScore = analysis.misinformationScore ?? 0;
-        const penalty = Math.max(aiScore, misScore);
-        const trustScore = 100 - penalty;
+        const trustScore = analysis.trustScore ?? Math.max(0, 100 - Math.max(aiScore, misScore));
 
         let cls;
         let icon;
@@ -372,7 +395,7 @@
                     <div class="instaguard-bar"><div class="instaguard-bar-fill" style="width:${misScore}%;background:${col(misScore)}"></div></div>
                     <span>${misScore}%</span>
                 </div>
-                <p class="instaguard-note">Analysis based on the ${analysis.postsAnalyzedCount} most recent uploads.</p>
+                <p class="instaguard-note">Database score built from ${analysis.postsAnalyzedCount} analyzed posts${analysis.recentPostsAnalyzed ? `, including ${analysis.recentPostsAnalyzed} checked just now` : ''}.</p>
                 ${analysis.summary ? `<p class="instaguard-summary">"Overall Profile: ${analysis.summary}"</p>` : ''}
             </div>`;
 
@@ -390,6 +413,33 @@
         });
 
         btn.replaceWith(badge);
+    }
+
+    async function getStoredProfileAnalysis(accountId, platform) {
+        if (!accountId) return null;
+
+        try {
+            const response = await chrome.runtime.sendMessage({
+                type: 'GET_ACCOUNT_RELIABILITY',
+                accountId,
+                platform
+            });
+            return response?.success ? response.analysis : null;
+        } catch {
+            return null;
+        }
+    }
+
+    async function renderStoredProfileBadge(wrapper, accountId, platform, usernameLabel) {
+        const storedAnalysis = await getStoredProfileAnalysis(accountId, platform);
+        if (!storedAnalysis) return false;
+
+        const placeholder = document.createElement('button');
+        placeholder.type = 'button';
+        placeholder.style.display = 'none';
+        wrapper.appendChild(placeholder);
+        showProfileResult(placeholder, storedAnalysis, usernameLabel || accountId);
+        return true;
     }
 
     function showError(btn, msg) {
@@ -563,7 +613,7 @@
     function tryInjectInstagramProfileButton() {
         const username = getInstagramProfileUsernameFromURL();
         if (!username) return;
-        if (document.getElementById('instaguard-profile-btn-instagram')) return;
+        if (document.querySelector('.instaguard-profile-trust-wrapper[data-platform="instagram"]')) return;
 
         const headerSelectors = ['header section', 'header'];
         let target = null;
@@ -577,13 +627,14 @@
             return;
         }
 
-        const wrapper = document.createElement('div');
-        wrapper.style.display = 'flex';
-        wrapper.style.alignItems = 'center';
-        wrapper.style.marginTop = '15px';
-        wrapper.style.marginBottom = '15px';
-        wrapper.appendChild(createProfileButton(username, 'instagram'));
+        const wrapper = createProfileContainer('instagram');
         target.appendChild(wrapper);
+
+        renderStoredProfileBadge(wrapper, username, 'instagram', username).then((hasStoredBadge) => {
+            if (!hasStoredBadge && wrapper.isConnected && !wrapper.querySelector('#instaguard-profile-btn-instagram')) {
+                wrapper.appendChild(createProfileButton(username, 'instagram'));
+            }
+        });
     }
 
     function getInstagramProfileShortcodes() {
@@ -793,7 +844,12 @@
             mediaUrl: media.is_video ? media.video_url : media.display_url,
             isVideo: !!media.is_video,
             hasOriginalAudio,
-            caption: media.edge_media_to_caption?.edges?.[0]?.node?.text || ''
+            caption: media.edge_media_to_caption?.edges?.[0]?.node?.text || '',
+            account: {
+                id: media.owner?.username || shortcode,
+                username: media.owner?.username || null,
+                displayName: media.owner?.full_name || media.owner?.username || shortcode
+            }
         };
     }
 
@@ -817,7 +873,12 @@
             mediaUrl: best.url,
             isVideo,
             hasOriginalAudio,
-            caption: item.caption?.text || ''
+            caption: item.caption?.text || '',
+            account: {
+                id: item.user?.username || item.user?.pk || item.pk || null,
+                username: item.user?.username || null,
+                displayName: item.user?.full_name || item.user?.username || null
+            }
         };
     }
 
@@ -847,6 +908,33 @@
         if (!YT_CHANNEL_REGEX.test(path)) return null;
         if (path.startsWith('/watch') || path.startsWith('/shorts')) return null;
         return path.replace(/^\/|\/$/g, '');
+    }
+
+    function getCurrentYouTubeAccount() {
+        const channelId =
+            document.querySelector('ytd-watch-metadata')?.__data?.owner?.videoOwnerRenderer?.navigationEndpoint?.browseEndpoint?.browseId ||
+            document.querySelector('ytd-reel-video-renderer[is-active]')?.__data?.reelPlayerHeaderSupportedRenderers?.reelPlayerHeaderRenderer?.channelNavigationEndpoint?.browseEndpoint?.browseId ||
+            null;
+        const displayName = getTextContent(document, [
+            'ytd-watch-metadata #owner #channel-name a',
+            'ytd-watch-metadata #channel-name a',
+            'ytd-reel-video-renderer[is-active] #channel-name',
+            '#text.ytd-channel-name'
+        ]);
+        const handle =
+            document.querySelector('link[itemprop="name"]')?.getAttribute('content') ||
+            getYouTubeChannelIdentifier() ||
+            displayName ||
+            channelId;
+
+        if (!handle && !channelId && !displayName) return null;
+
+        return {
+            id: channelId || handle,
+            channelId: channelId || null,
+            username: handle || null,
+            displayName: displayName || handle || channelId
+        };
     }
 
     function tryInjectYouTubeButton() {
@@ -965,9 +1053,10 @@
     }
 
     function tryInjectYouTubeChannelButton() {
-        const channelId = getYouTubeChannelIdentifier();
+        const account = getCurrentYouTubeAccount();
+        const channelId = account?.id || getYouTubeChannelIdentifier();
         if (!channelId) return;
-        if (document.getElementById('instaguard-profile-btn-youtube')) return;
+        if (document.querySelector('.instaguard-profile-trust-wrapper[data-platform="youtube"]')) return;
 
         const targets = [
             '#page-header',
@@ -984,13 +1073,14 @@
 
         if (!target) return;
 
-        const wrapper = document.createElement('div');
-        wrapper.style.display = 'flex';
-        wrapper.style.alignItems = 'center';
-        wrapper.style.marginTop = '12px';
-        wrapper.style.marginBottom = '12px';
-        wrapper.appendChild(createProfileButton(channelId, 'youtube'));
+        const wrapper = createProfileContainer('youtube');
         target.appendChild(wrapper);
+
+        renderStoredProfileBadge(wrapper, channelId, 'youtube', account?.displayName || channelId).then((hasStoredBadge) => {
+            if (!hasStoredBadge && wrapper.isConnected && !wrapper.querySelector('#instaguard-profile-btn-youtube')) {
+                wrapper.appendChild(createProfileButton(channelId, 'youtube'));
+            }
+        });
     }
 
     function getYouTubeChannelVideoIds() {
@@ -1070,7 +1160,8 @@
             mediaUrl: thumbnail,
             isVideo: true,
             hasOriginalAudio: false,
-            caption: buildYouTubeCaption(title, description)
+            caption: buildYouTubeCaption(title, description),
+            account: getCurrentYouTubeAccount()
         };
     }
 
@@ -1088,12 +1179,22 @@
         const title = getYouTubeMetaContent(doc, 'meta[property="og:title"]') || doc.title.replace(/\s*-\s*YouTube$/, '');
         const description = getYouTubeMetaContent(doc, 'meta[name="description"]');
         const thumbnail = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+        const author = getYouTubeMetaContent(doc, 'meta[itemprop="name"]') || getYouTubeMetaContent(doc, 'link[itemprop="name"]');
 
         return {
             mediaUrl: thumbnail,
             isVideo: true,
             hasOriginalAudio: false,
-            caption: buildYouTubeCaption(title, description)
+            caption: buildYouTubeCaption(title, description),
+            account: author ? {
+                id: author,
+                username: author,
+                displayName: author
+            } : {
+                id: getYouTubeChannelIdentifier() || null,
+                username: getYouTubeChannelIdentifier() || null,
+                displayName: getYouTubeChannelIdentifier() || null
+            }
         };
     }
 
