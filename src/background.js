@@ -22,20 +22,20 @@ function logDebug(message, data = null, level = 'info') {
 }
 
 // ── Persistent cache backed by chrome.storage.local ─────────
-async function getCached(shortcode) {
-    if (SESSION_CACHE.has(shortcode)) return SESSION_CACHE.get(shortcode);
-    const key = `ig_cache_${shortcode}`;
+async function getCached(cacheKey) {
+    if (SESSION_CACHE.has(cacheKey)) return SESSION_CACHE.get(cacheKey);
+    const key = `ig_cache_${cacheKey}`;
     const stored = await chrome.storage.local.get(key);
     if (stored[key]) {
-        SESSION_CACHE.set(shortcode, stored[key]); // warm in-memory cache
+        SESSION_CACHE.set(cacheKey, stored[key]); // warm in-memory cache
         return stored[key];
     }
     return null;
 }
 
-async function setCached(shortcode, result) {
-    SESSION_CACHE.set(shortcode, result);
-    const key = `ig_cache_${shortcode}`;
+async function setCached(cacheKey, result) {
+    SESSION_CACHE.set(cacheKey, result);
+    const key = `ig_cache_${cacheKey}`;
     await chrome.storage.local.set({ [key]: result });
 }
 
@@ -46,7 +46,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return true; // keep channel open for async response
     }
     if (message.type === 'ANALYZE_PROFILE') {
-        handleProfileAnalysis(message.username, message.shortcodes, sender.tab.id).then(sendResponse);
+        handleProfileAnalysis(message.username, message.shortcodes, sender.tab.id, message.platform || 'instagram').then(sendResponse);
         return true;
     }
     if (message.type === 'GET_SETTINGS') {
@@ -91,9 +91,10 @@ async function saveSettings(settings) {
 }
 
 // ── Main analysis handler ───────────────────────────────────
-async function handleAnalysis({ shortcode, mediaUrl, mediaType, hasOriginalAudio, caption, thumbnailsBase64 }) {
+async function handleAnalysis({ shortcode, mediaUrl, mediaType, hasOriginalAudio, caption, thumbnailsBase64, platform = 'instagram' }) {
     // Check persistent cache first — survives service worker restarts
-    const cached = await getCached(shortcode);
+    const cacheKey = `${platform}_${shortcode}`;
+    const cached = await getCached(cacheKey);
     if (cached) return cached;
 
     const settings = await getSettings();
@@ -110,10 +111,10 @@ async function handleAnalysis({ shortcode, mediaUrl, mediaType, hasOriginalAudio
             transcript = await transcribeAudio(settings.elevenLabsKey, mediaUrl);
         }
 
-        logDebug('Starting analysis', { shortcode, mediaType, hasTranscript: !!transcript });
-        const result = await analyzeWithPollinations(settings.apiKey, mediaUrl, mediaType, caption, thumbnailsBase64, transcript);
-        logDebug('Analysis complete', { shortcode, success: result.success });
-        await setCached(shortcode, result);
+        logDebug('Starting analysis', { shortcode, platform, mediaType, hasTranscript: !!transcript });
+        const result = await analyzeWithPollinations(settings.apiKey, mediaUrl, mediaType, caption, thumbnailsBase64, transcript, platform);
+        logDebug('Analysis complete', { shortcode, platform, success: result.success });
+        await setCached(cacheKey, result);
         return result;
     } catch (err) {
         logDebug('Analysis error', { message: err.message }, 'error');
@@ -122,13 +123,13 @@ async function handleAnalysis({ shortcode, mediaUrl, mediaType, hasOriginalAudio
 }
 
 // ── Profile Analysis Handler ──────────────────────────────────────
-async function handleProfileAnalysis(username, shortcodes, tabId) {
+async function handleProfileAnalysis(username, shortcodes, tabId, platform = 'instagram') {
     const settings = await getSettings();
     if (!settings.apiKey) {
         return { error: 'NO_API_KEY', message: 'Please set your Pollinations Token.' };
     }
 
-    logDebug('Starting profile analysis', { username, shortcodes });
+    logDebug('Starting profile analysis', { username, shortcodes, platform });
     
     let totalAi = 0;
     let totalMis = 0;
@@ -141,7 +142,7 @@ async function handleProfileAnalysis(username, shortcodes, tabId) {
             // Ask the content script to fetch the media data for this shortcode
             // because the content script has the proper Instagram headers (CSRF, etc.)
             const postData = await new Promise((resolve, reject) => {
-                chrome.tabs.sendMessage(tabId, { type: 'FETCH_POST_DATA', shortcode: code }, (response) => {
+                chrome.tabs.sendMessage(tabId, { type: 'FETCH_MEDIA_DATA', shortcode: code, platform }, (response) => {
                     if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
                     else resolve(response);
                 });
@@ -158,7 +159,8 @@ async function handleProfileAnalysis(username, shortcodes, tabId) {
                 mediaUrl: postData.mediaUrl,
                 mediaType: postData.isVideo ? 'video' : 'image',
                 hasOriginalAudio: postData.hasOriginalAudio,
-                caption: '' // We ignore captions now anyway
+                caption: postData.caption || '',
+                platform
             });
 
             if (res.success && res.analysis) {
@@ -233,7 +235,7 @@ async function transcribeAudio(apiKey, mediaUrl) {
 }
 
 // ── Pollinations API call ─────────────────────────────────────────
-async function analyzeWithPollinations(apiKey, mediaUrl, mediaType, caption, thumbnailsBase64, transcript) {
+async function analyzeWithPollinations(apiKey, mediaUrl, mediaType, caption, thumbnailsBase64, transcript, platform = 'instagram') {
     const isVideo = mediaType === 'video';
 
     let base64DataArray = [];
@@ -248,7 +250,7 @@ async function analyzeWithPollinations(apiKey, mediaUrl, mediaType, caption, thu
         base64DataArray = [await blobToBase64(blob)];
     }
 
-    const prompt = buildPrompt(caption, isVideo, transcript);
+    const prompt = buildPrompt(caption, isVideo, transcript, platform);
     const apiUrl = `https://gen.pollinations.ai/v1/chat/completions`;
 
     const messageContent = [
@@ -360,15 +362,17 @@ async function analyzeWithPollinations(apiKey, mediaUrl, mediaType, caption, thu
 }
 
 // ── Prompt builder ──────────────────────────────────────────
-function buildPrompt(caption, isVideo, transcript) {
+function buildPrompt(caption, isVideo, transcript, platform = 'instagram') {
     const mediaWord = isVideo ? 'sequence of video frames' : 'image';
+    const sourceLabel = platform === 'youtube' ? 'YouTube video or Short' : 'Instagram post';
     let transcriptSection = '';
+    const captionSection = caption ? `\n\nVISIBLE TEXT / TITLE / DESCRIPTION:\n"${caption}"` : '';
     
     if (transcript) {
         transcriptSection = `\n\nAUDIO TRANSCRIPT:\n"${transcript}"`;
     }
 
-    return `You are an expert media forensics analyst and fact-checker. Analyze this ${mediaWord} from an Instagram post.
+    return `You are an expert media forensics analyst and fact-checker. Analyze this ${mediaWord} from a ${sourceLabel}.${captionSection}
 
 ${transcriptSection}
 
