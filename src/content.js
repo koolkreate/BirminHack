@@ -113,10 +113,7 @@
     function createProfileButton(username, platform) {
         const btn = document.createElement('button');
         btn.id = `instaguard-profile-btn-${platform}`;
-        btn.className = 'instaguard-scan-btn';
-        btn.style.width = '100%';
-        btn.style.justifyContent = 'center';
-        btn.style.padding = '8px 16px';
+        btn.className = 'instaguard-scan-btn instaguard-profile-btn';
         btn.dataset.username = username;
         btn.dataset.platform = platform;
         btn.innerHTML = `
@@ -376,9 +373,7 @@
         }
 
         const badge = document.createElement('div');
-        badge.className = `instaguard-badge instaguard-${cls}`;
-        badge.style.width = '100%';
-        badge.style.maxWidth = '100%';
+        badge.className = `instaguard-badge instaguard-profile-badge instaguard-${cls}`;
         badge.dataset.username = username;
 
         badge.innerHTML = `
