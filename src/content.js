@@ -633,6 +633,14 @@
         const activeContainer = findInstagramActiveContainer();
 
         if (activeContainer) {
+            const mediaHost =
+                activeContainer.querySelector('video')?.parentElement ||
+                activeContainer.querySelector('img')?.parentElement;
+
+            if (mediaHost) {
+                return { type: 'overlay', element: mediaHost };
+            }
+
             const moreButtons = activeContainer.querySelectorAll('button, div[role="button"]');
             for (const btn of moreButtons) {
                 const svg = btn.querySelector('svg[aria-label="More options"], svg[aria-label="More"]');
@@ -651,11 +659,6 @@
                         return { type: 'append', element: el };
                     }
                 }
-            }
-
-            const video = activeContainer.querySelector('video');
-            if (video) {
-                return { type: 'overlay', element: video.parentElement || activeContainer };
             }
         }
 
