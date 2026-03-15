@@ -11,6 +11,7 @@
     const IG_SHORTCODE_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
     const IG_POST_REGEX = /^\/(p|tv|reel|reels)\/([A-Za-z0-9_-]+)/;
     const IG_PROFILE_REGEX = /^\/([A-Za-z0-9_.]+)\/?$/;
+    const IG_PROFILE_TAB_REGEX = /^\/([A-Za-z0-9_.]+)\/(reels|tagged|channels|guides)\/?$/;
     const YT_CHANNEL_REGEX = /^\/(@[^/]+|channel\/[^/]+|c\/[^/]+|user\/[^/]+)(\/(featured|videos|shorts|streams|playlists|community|channels|about))?\/?$/;
 
     let sessionHeaders = { wwwClaim: '', csrfToken: '' };
@@ -106,25 +107,6 @@
             e.stopPropagation();
             e.preventDefault();
             startAnalysis(mediaId, btn, platform);
-        });
-        return btn;
-    }
-
-    function createProfileButton(username, platform) {
-        const btn = document.createElement('button');
-        btn.id = `instaguard-profile-btn-${platform}`;
-        btn.className = 'instaguard-scan-btn instaguard-profile-btn';
-        btn.dataset.username = username;
-        btn.dataset.platform = platform;
-        btn.innerHTML = `
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-            </svg>
-            <span>Calculate Trust Score</span>
-        `;
-        btn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            startProfileAnalysis(username, btn, platform);
         });
         return btn;
     }
@@ -486,7 +468,11 @@
     }
 
     async function refreshVisibleProfileTrust(platform, scannedAccount = null) {
-        const profileContext = getCurrentProfileTrustContext(platform);
+        let profileContext = getCurrentProfileTrustContext(platform);
+        if (!profileContext?.wrapper && platform === 'instagram') {
+            tryInjectInstagramProfileButton();
+            profileContext = getCurrentProfileTrustContext(platform);
+        }
         if (!profileContext?.wrapper) return;
         if (scannedAccount && !doesAccountMatchProfile(platform, scannedAccount, profileContext)) return;
 
@@ -501,9 +487,8 @@
             platform,
             profileContext.label
         );
-
-        if (!hasStoredBadge && !profileContext.wrapper.querySelector('.instaguard-scan-btn')) {
-            profileContext.wrapper.appendChild(createProfileButton(profileContext.accountId, platform));
+        if (!hasStoredBadge && !profileContext.wrapper.querySelector('.instaguard-badge')) {
+            profileContext.wrapper.remove();
         }
     }
 
@@ -670,7 +655,15 @@
 
     function getInstagramProfileUsernameFromURL() {
         const path = window.location.pathname;
-        if (path === '/' || path.startsWith('/explore/') || path.startsWith('/reels/') || path.startsWith('/direct/')) return null;
+        if (
+            path === '/' ||
+            path.startsWith('/explore/') ||
+            path.startsWith('/reels/') ||
+            path.startsWith('/direct/') ||
+            IG_POST_REGEX.test(path)
+        ) return null;
+        const tabMatch = path.match(IG_PROFILE_TAB_REGEX);
+        if (tabMatch) return tabMatch[1];
         const m = path.match(IG_PROFILE_REGEX);
         return m ? m[1] : null;
     }
@@ -696,8 +689,8 @@
         target.appendChild(wrapper);
 
         renderStoredProfileBadge(wrapper, username, 'instagram', username).then((hasStoredBadge) => {
-            if (!hasStoredBadge && wrapper.isConnected && !wrapper.querySelector('#instaguard-profile-btn-instagram')) {
-                wrapper.appendChild(createProfileButton(username, 'instagram'));
+            if (!hasStoredBadge && wrapper.isConnected && !wrapper.querySelector('.instaguard-badge')) {
+                wrapper.remove();
             }
         });
     }
@@ -1142,8 +1135,8 @@
         target.appendChild(wrapper);
 
         renderStoredProfileBadge(wrapper, channelId, 'youtube', account?.displayName || channelId).then((hasStoredBadge) => {
-            if (!hasStoredBadge && wrapper.isConnected && !wrapper.querySelector('#instaguard-profile-btn-youtube')) {
-                wrapper.appendChild(createProfileButton(channelId, 'youtube'));
+            if (!hasStoredBadge && wrapper.isConnected && !wrapper.querySelector('.instaguard-badge')) {
+                wrapper.remove();
             }
         });
     }

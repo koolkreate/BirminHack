@@ -99,14 +99,6 @@
     align-self: flex-start;
 }
 
-.instaguard-profile-btn {
-    justify-content: center;
-    width: auto;
-    max-width: 100%;
-    padding: 8px 16px;
-    margin: 0;
-}
-
 .instaguard-profile-badge {
     width: auto;
     min-width: 280px;
